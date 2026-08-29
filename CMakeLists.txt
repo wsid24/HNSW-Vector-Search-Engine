@@ -43,3 +43,8 @@ target_compile_definitions(test_search_correctness PRIVATE PROJECT_ROOT_DIR="${C
 add_executable(test_recall_vs_ef tests/test_recall_vs_ef.cpp)
 target_link_libraries(test_recall_vs_ef hnsw_core)
 target_compile_definitions(test_recall_vs_ef PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+
+# Benchmark executable for real dataset
+add_executable(run_real_dataset benchmarks/run_real_dataset.cpp)
+target_link_libraries(run_real_dataset hnsw_core)
+target_compile_definitions(run_real_dataset PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
