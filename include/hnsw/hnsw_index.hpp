@@ -10,6 +10,8 @@
 #include <utility>
 #include <algorithm>
 #include <functional>
+#include <fstream>
+#include <stdexcept>
 
 namespace hnsw {
 
@@ -295,6 +297,116 @@ public:
         }
         
         return results;
+    }
+    
+    void save(const std::string& path) const {
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+            throw std::runtime_error("Failed to open file for saving: " + path);
+        }
+        
+        // Write header
+        out.write(reinterpret_cast<const char*>(&dim_), sizeof(dim_));
+        out.write(reinterpret_cast<const char*>(&M_), sizeof(M_));
+        out.write(reinterpret_cast<const char*>(&efConstruction_), sizeof(efConstruction_));
+        out.write(reinterpret_cast<const char*>(&entry_point_id_), sizeof(entry_point_id_));
+        out.write(reinterpret_cast<const char*>(&max_layer_), sizeof(max_layer_));
+        
+        // Write vector store
+        size_t num_vectors = vector_store_.size();
+        out.write(reinterpret_cast<const char*>(&num_vectors), sizeof(num_vectors));
+        if (num_vectors > 0) {
+            out.write(reinterpret_cast<const char*>(vector_store_.raw_data()), num_vectors * dim_ * sizeof(float));
+        }
+        
+        // Write nodes
+        size_t num_nodes = nodes_.size();
+        out.write(reinterpret_cast<const char*>(&num_nodes), sizeof(num_nodes));
+        
+        for (const auto& node : nodes_) {
+            out.write(reinterpret_cast<const char*>(&node.vector_id), sizeof(node.vector_id));
+            out.write(reinterpret_cast<const char*>(&node.max_layer), sizeof(node.max_layer));
+            
+            size_t num_layers = node.neighbors.size();
+            out.write(reinterpret_cast<const char*>(&num_layers), sizeof(num_layers));
+            
+            for (size_t l = 0; l < num_layers; ++l) {
+                size_t num_neighbors = node.neighbors[l].size();
+                out.write(reinterpret_cast<const char*>(&num_neighbors), sizeof(num_neighbors));
+                if (num_neighbors > 0) {
+                    out.write(reinterpret_cast<const char*>(node.neighbors[l].data()), num_neighbors * sizeof(uint32_t));
+                }
+            }
+        }
+        
+        if (!out) {
+            throw std::runtime_error("Error occurred while writing to file: " + path);
+        }
+    }
+    
+    void load(const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            throw std::runtime_error("Failed to open file for loading: " + path);
+        }
+        
+        try {
+            // Read header
+            in.read(reinterpret_cast<char*>(&dim_), sizeof(dim_));
+            in.read(reinterpret_cast<char*>(&M_), sizeof(M_));
+            in.read(reinterpret_cast<char*>(&efConstruction_), sizeof(efConstruction_));
+            in.read(reinterpret_cast<char*>(&entry_point_id_), sizeof(entry_point_id_));
+            in.read(reinterpret_cast<char*>(&max_layer_), sizeof(max_layer_));
+            
+            // Read vector store
+            size_t num_vectors;
+            in.read(reinterpret_cast<char*>(&num_vectors), sizeof(num_vectors));
+            if (!in) throw std::runtime_error("EOF while reading vector store size");
+            
+            vector_store_ = VectorStore(dim_, num_vectors);
+            vector_store_.resize(num_vectors);
+            if (num_vectors > 0) {
+                in.read(reinterpret_cast<char*>(vector_store_.mutable_data()), num_vectors * dim_ * sizeof(float));
+            }
+            
+            // Read nodes
+            size_t num_nodes;
+            in.read(reinterpret_cast<char*>(&num_nodes), sizeof(num_nodes));
+            if (!in) throw std::runtime_error("EOF while reading node count");
+            
+            nodes_.resize(num_nodes);
+            
+            for (size_t i = 0; i < num_nodes; ++i) {
+                GraphNode& node = nodes_[i];
+                in.read(reinterpret_cast<char*>(&node.vector_id), sizeof(node.vector_id));
+                in.read(reinterpret_cast<char*>(&node.max_layer), sizeof(node.max_layer));
+                
+                size_t num_layers;
+                in.read(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
+                if (!in) throw std::runtime_error("EOF while reading layers");
+                
+                node.neighbors.resize(num_layers);
+                
+                for (size_t l = 0; l < num_layers; ++l) {
+                    size_t num_neighbors;
+                    in.read(reinterpret_cast<char*>(&num_neighbors), sizeof(num_neighbors));
+                    if (num_neighbors > 0) {
+                        node.neighbors[l].resize(num_neighbors);
+                        in.read(reinterpret_cast<char*>(node.neighbors[l].data()), num_neighbors * sizeof(uint32_t));
+                    }
+                }
+            }
+            
+            if (!in) {
+                throw std::runtime_error("Error occurred while reading from file or unexpected EOF");
+            }
+            
+            // Re-calculate derived values
+            mL_ = 1.0 / std::log(static_cast<double>(M_));
+            
+        } catch (const std::exception& e) {
+            throw std::runtime_error("File format corrupted or invalid data: " + std::string(e.what()));
+        }
     }
 
 

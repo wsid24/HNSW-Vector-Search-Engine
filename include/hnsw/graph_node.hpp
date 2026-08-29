@@ -45,6 +45,18 @@ public:
         return dim_;
     }
 
+    const float* raw_data() const {
+        return data_.data();
+    }
+    
+    float* mutable_data() {
+        return data_.data();
+    }
+    
+    void resize(size_t num_vectors) {
+        data_.resize(num_vectors * dim_);
+    }
+
 private:
     size_t dim_;
     std::vector<float> data_;

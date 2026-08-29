@@ -48,3 +48,7 @@ target_compile_definitions(test_recall_vs_ef PRIVATE PROJECT_ROOT_DIR="${CMAKE_S
 add_executable(run_real_dataset benchmarks/run_real_dataset.cpp)
 target_link_libraries(run_real_dataset hnsw_core)
 target_compile_definitions(run_real_dataset PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+
+# Test executable for persistence
+add_executable(test_persistence tests/test_persistence.cpp)
+target_link_libraries(test_persistence hnsw_core)
