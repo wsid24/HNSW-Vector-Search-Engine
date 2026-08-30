@@ -28,7 +28,7 @@ int main() {
         GraphNode node;
         node.vector_id = vec_id;
         node.max_layer = 0;
-        node.neighbors.push_back({}); // layer 0 neighbors
+        index.allocate_node_in_arena(0);
         index.nodes_.push_back(node);
     }
     index.max_layer_ = 0;
@@ -44,19 +44,29 @@ int main() {
         }
         std::sort(distances.begin(), distances.end()); // closest first
         
-        // Take top 3
+        // Add top 3 connections
         for (size_t k = 0; k < 3; ++k) {
-            index.nodes_[i].neighbors[0].push_back(distances[k].second);
-            // Ensure bidirectional for connectivity (simple hack to make graph connected)
-            index.nodes_[distances[k].second].neighbors[0].push_back(i);
+            uint32_t j = distances[k].second;
+            
+            // Add j to i
+            uint16_t ci = index.get_neighbor_count(i, 0);
+            index.neighbor_slots(i, 0)[ci] = j;
+            index.set_neighbor_count(i, 0, ci + 1);
+            
+            // Add i to j
+            uint16_t cj = index.get_neighbor_count(j, 0);
+            index.neighbor_slots(j, 0)[cj] = i;
+            index.set_neighbor_count(j, 0, cj + 1);
         }
     }
     
     // Remove duplicates from bidirectional edges
     for (size_t i = 0; i < num_nodes; ++i) {
-        auto& neighbors = index.nodes_[i].neighbors[0];
-        std::sort(neighbors.begin(), neighbors.end());
-        neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+        uint32_t* neighbors = index.neighbor_slots(i, 0);
+        uint16_t count = index.get_neighbor_count(i, 0);
+        std::sort(neighbors, neighbors + count);
+        auto last = std::unique(neighbors, neighbors + count);
+        index.set_neighbor_count(i, 0, std::distance(neighbors, last));
     }
 
     // Generate a query

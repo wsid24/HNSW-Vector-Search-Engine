@@ -7,6 +7,14 @@ namespace hnsw {
 // Computes the L2 (Euclidean) squared distance between two float vectors.
 float l2_squared_distance(const float* a, const float* b, size_t dim);
 
+#if defined(__ARM_NEON) || defined(__aarch64__)
+// NEON-accelerated L2 squared distance
+float l2_squared_distance_neon(const float* a, const float* b, size_t dim);
+#endif
+
+// Dispatcher function that uses the best available implementation
+float l2_squared_distance_best(const float* a, const float* b, size_t dim);
+
 // Computes the dot product distance between two float vectors.
 // Returns the negative dot product so that smaller values represent more similar (closer) vectors,
 // matching the contract of the other distance functions.

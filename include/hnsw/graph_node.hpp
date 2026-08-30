@@ -65,7 +65,6 @@ private:
 struct GraphNode {
     uint32_t vector_id;
     int max_layer;
-    std::vector<std::vector<uint32_t>> neighbors; // outer index = layer, inner = neighbor IDs
 };
 
 } // namespace hnsw

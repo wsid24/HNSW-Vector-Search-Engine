@@ -52,3 +52,21 @@ target_compile_definitions(run_real_dataset PRIVATE PROJECT_ROOT_DIR="${CMAKE_SO
 # Test executable for persistence
 add_executable(test_persistence tests/test_persistence.cpp)
 target_link_libraries(test_persistence hnsw_core)
+
+# Benchmark executable
+add_executable(run_benchmark benchmarks/run_benchmark.cpp)
+target_link_libraries(run_benchmark hnsw_core)
+target_compile_definitions(run_benchmark PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g")
+add_executable(profile_search benchmarks/profile_search.cpp)
+target_link_libraries(profile_search hnsw_core)
+target_compile_definitions(profile_search PRIVATE PROJECT_ROOT_DIR="${CMAKE_SOURCE_DIR}")
+
+# Test executable for NEON distance
+add_executable(test_distance_neon tests/test_distance_neon.cpp)
+target_link_libraries(test_distance_neon hnsw_core)
+
+# API Server
+add_executable(hnsw_server api/server.cpp)
+target_include_directories(hnsw_server PRIVATE third_party)
+target_link_libraries(hnsw_server hnsw_core)

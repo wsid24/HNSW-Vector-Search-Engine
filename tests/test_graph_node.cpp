@@ -50,25 +50,16 @@ int main() {
     GraphNode node0;
     node0.vector_id = 0;
     node0.max_layer = 1;
-    // Layer 0 neighbors: 1, 2. Layer 1 neighbors: 2
-    node0.neighbors = {{1, 2}, {2}};
     
     GraphNode node1;
     node1.vector_id = 1;
     node1.max_layer = 0;
-    // Layer 0 neighbors: 0, 3, 4
-    node1.neighbors = {{0, 3, 4}};
     
     assert(node0.vector_id == 0);
     assert(node0.max_layer == 1);
-    assert(node0.neighbors.size() == 2);
-    assert(node0.neighbors[0].size() == 2 && node0.neighbors[0][0] == 1);
-    assert(node0.neighbors[1].size() == 1 && node0.neighbors[1][0] == 2);
 
     assert(node1.vector_id == 1);
     assert(node1.max_layer == 0);
-    assert(node1.neighbors.size() == 1);
-    assert(node1.neighbors[0].size() == 3 && node1.neighbors[0][1] == 3);
 
     // Reallocation safety test
     {

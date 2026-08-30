@@ -43,7 +43,7 @@ public:
     // Computes distance from query vector to a specific node in the graph
     float distance_to_query(const float* query, uint32_t node_id) const {
         const float* node_vec = vector_store_.get_vector(nodes_[node_id].vector_id);
-        return l2_squared_distance(query, node_vec, dim_);
+        return l2_squared_distance_best(query, node_vec, dim_);
     }
 
     // Algorithm 2: Greedy search bounded to ef results at a specific layer
@@ -88,10 +88,13 @@ public:
             
             // Guard against layer out of bounds (can happen if node doesn't reach this layer)
             if (layer > nodes_[id_c].max_layer) continue;
-            if (layer >= nodes_[id_c].neighbors.size()) continue; 
+            if (layer >= neighbor_counts_[id_c].size()) continue; 
             
-            const auto& neighbors = nodes_[id_c].neighbors[layer];
-            for (uint32_t neighbor_id : neighbors) {
+            const uint32_t* neighbors = neighbor_slots(id_c, layer);
+            uint16_t num_neighbors = get_neighbor_count(id_c, layer);
+            
+            for (uint16_t i = 0; i < num_neighbors; ++i) {
+                uint32_t neighbor_id = neighbors[i];
                 if (visited.find(neighbor_id) == visited.end()) {
                     visited.insert(neighbor_id);
                     float dist_e = distance_to_query(query, neighbor_id);
@@ -162,7 +165,7 @@ public:
     float distance_between_nodes(uint32_t id1, uint32_t id2) const {
         const float* vec1 = vector_store_.get_vector(nodes_[id1].vector_id);
         const float* vec2 = vector_store_.get_vector(nodes_[id2].vector_id);
-        return l2_squared_distance(vec1, vec2, dim_);
+        return l2_squared_distance_best(vec1, vec2, dim_);
     }
 
     void insert(const float* vector) {
@@ -172,9 +175,8 @@ public:
         GraphNode new_node;
         new_node.vector_id = vec_id;
         new_node.max_layer = new_node_layer;
-        new_node.neighbors.resize(new_node_layer + 1);
         
-        uint32_t new_node_id = nodes_.size();
+        uint32_t new_node_id = allocate_node_in_arena(new_node_layer);
         nodes_.push_back(new_node);
         
         if (entry_point_id_ == -1) {
@@ -191,8 +193,11 @@ public:
             bool changed = true;
             while (changed) {
                 changed = false;
-                if (layer <= nodes_[curr_ep].max_layer && layer < static_cast<int>(nodes_[curr_ep].neighbors.size())) {
-                    for (uint32_t neighbor : nodes_[curr_ep].neighbors[layer]) {
+                if (layer <= nodes_[curr_ep].max_layer && layer < static_cast<int>(neighbor_counts_[curr_ep].size())) {
+                    const uint32_t* neighbors = neighbor_slots(curr_ep, layer);
+                    uint16_t num_neighbors = get_neighbor_count(curr_ep, layer);
+                    for (uint16_t i = 0; i < num_neighbors; ++i) {
+                        uint32_t neighbor = neighbors[i];
                         float dist = distance_to_query(vector, neighbor);
                         if (dist < curr_dist) {
                             curr_dist = dist;
@@ -214,26 +219,39 @@ public:
             size_t M_max = (layer == 0) ? (M_ * 2) : M_;
             std::vector<uint32_t> selected = select_neighbors_heuristic(vector, candidates, M_max);
             
-            nodes_[new_node_id].neighbors[layer] = selected;
+            uint32_t* slots_new = neighbor_slots(new_node_id, layer);
+            for (size_t i = 0; i < selected.size(); ++i) {
+                slots_new[i] = selected[i];
+            }
+            set_neighbor_count(new_node_id, layer, selected.size());
             
             // Connect bidirectionally and prune if necessary
             for (uint32_t neighbor_id : selected) {
-                auto& neighbor_edges = nodes_[neighbor_id].neighbors[layer];
-                neighbor_edges.push_back(new_node_id);
+                uint32_t* slots_n = neighbor_slots(neighbor_id, layer);
+                uint16_t n_count = get_neighbor_count(neighbor_id, layer);
                 
-                if (neighbor_edges.size() > M_max) {
+                slots_n[n_count] = new_node_id;
+                n_count++;
+                set_neighbor_count(neighbor_id, layer, n_count);
+                
+                if (n_count > M_max) {
                     // Gather all candidates (existing + new) and their distances to the neighbor
                     std::vector<std::pair<float, uint32_t>> neighbor_candidates;
-                    neighbor_candidates.reserve(neighbor_edges.size());
+                    neighbor_candidates.reserve(n_count);
                     
                     const float* neighbor_vec = vector_store_.get_vector(nodes_[neighbor_id].vector_id);
-                    for (uint32_t n_id : neighbor_edges) {
+                    for (size_t i = 0; i < n_count; ++i) {
+                        uint32_t n_id = slots_n[i];
                         float d = distance_to_query(neighbor_vec, n_id);
                         neighbor_candidates.push_back({d, n_id});
                     }
                     std::sort(neighbor_candidates.begin(), neighbor_candidates.end());
                     
-                    nodes_[neighbor_id].neighbors[layer] = select_neighbors_heuristic(neighbor_vec, neighbor_candidates, M_max);
+                    auto pruned = select_neighbors_heuristic(neighbor_vec, neighbor_candidates, M_max);
+                    for (size_t i = 0; i < pruned.size(); ++i) {
+                        slots_n[i] = pruned[i];
+                    }
+                    set_neighbor_count(neighbor_id, layer, pruned.size());
                 }
             }
             
@@ -275,8 +293,11 @@ public:
             bool changed = true;
             while (changed) {
                 changed = false;
-                if (layer <= nodes_[curr_ep].max_layer && layer < static_cast<int>(nodes_[curr_ep].neighbors.size())) {
-                    for (uint32_t neighbor : nodes_[curr_ep].neighbors[layer]) {
+                if (layer <= nodes_[curr_ep].max_layer && layer < static_cast<int>(neighbor_counts_[curr_ep].size())) {
+                    const uint32_t* neighbors = neighbor_slots(curr_ep, layer);
+                    uint16_t num_neighbors = get_neighbor_count(curr_ep, layer);
+                    for (uint16_t i = 0; i < num_neighbors; ++i) {
+                        uint32_t neighbor = neighbors[i];
                         float dist = distance_to_query(query, neighbor);
                         if (dist < curr_dist) {
                             curr_dist = dist;
@@ -306,6 +327,8 @@ public:
         }
         
         // Write header
+        uint32_t version = 1;
+        out.write(reinterpret_cast<const char*>(&version), sizeof(version));
         out.write(reinterpret_cast<const char*>(&dim_), sizeof(dim_));
         out.write(reinterpret_cast<const char*>(&M_), sizeof(M_));
         out.write(reinterpret_cast<const char*>(&efConstruction_), sizeof(efConstruction_));
@@ -322,20 +345,30 @@ public:
         // Write nodes
         size_t num_nodes = nodes_.size();
         out.write(reinterpret_cast<const char*>(&num_nodes), sizeof(num_nodes));
+        if (num_nodes > 0) {
+            out.write(reinterpret_cast<const char*>(nodes_.data()), num_nodes * sizeof(GraphNode));
+        }
         
-        for (const auto& node : nodes_) {
-            out.write(reinterpret_cast<const char*>(&node.vector_id), sizeof(node.vector_id));
-            out.write(reinterpret_cast<const char*>(&node.max_layer), sizeof(node.max_layer));
-            
-            size_t num_layers = node.neighbors.size();
-            out.write(reinterpret_cast<const char*>(&num_layers), sizeof(num_layers));
-            
-            for (size_t l = 0; l < num_layers; ++l) {
-                size_t num_neighbors = node.neighbors[l].size();
-                out.write(reinterpret_cast<const char*>(&num_neighbors), sizeof(num_neighbors));
-                if (num_neighbors > 0) {
-                    out.write(reinterpret_cast<const char*>(node.neighbors[l].data()), num_neighbors * sizeof(uint32_t));
-                }
+        // Write arena
+        size_t arena_sz = neighbor_arena_.size();
+        out.write(reinterpret_cast<const char*>(&arena_sz), sizeof(arena_sz));
+        if (arena_sz > 0) {
+            out.write(reinterpret_cast<const char*>(neighbor_arena_.data()), arena_sz * sizeof(uint32_t));
+        }
+        
+        size_t offset_sz = node_arena_offset_.size();
+        out.write(reinterpret_cast<const char*>(&offset_sz), sizeof(offset_sz));
+        if (offset_sz > 0) {
+            out.write(reinterpret_cast<const char*>(node_arena_offset_.data()), offset_sz * sizeof(size_t));
+        }
+        
+        size_t counts_sz = neighbor_counts_.size();
+        out.write(reinterpret_cast<const char*>(&counts_sz), sizeof(counts_sz));
+        for (const auto& counts : neighbor_counts_) {
+            size_t c_sz = counts.size();
+            out.write(reinterpret_cast<const char*>(&c_sz), sizeof(c_sz));
+            if (c_sz > 0) {
+                out.write(reinterpret_cast<const char*>(counts.data()), c_sz * sizeof(uint16_t));
             }
         }
         
@@ -351,6 +384,12 @@ public:
         }
         
         try {
+            uint32_t version;
+            in.read(reinterpret_cast<char*>(&version), sizeof(version));
+            if (!in || version != 1) {
+                throw std::runtime_error("Unsupported file version or corrupted file");
+            }
+            
             // Read header
             in.read(reinterpret_cast<char*>(&dim_), sizeof(dim_));
             in.read(reinterpret_cast<char*>(&M_), sizeof(M_));
@@ -375,25 +414,38 @@ public:
             if (!in) throw std::runtime_error("EOF while reading node count");
             
             nodes_.resize(num_nodes);
+            if (num_nodes > 0) {
+                in.read(reinterpret_cast<char*>(nodes_.data()), num_nodes * sizeof(GraphNode));
+            }
             
-            for (size_t i = 0; i < num_nodes; ++i) {
-                GraphNode& node = nodes_[i];
-                in.read(reinterpret_cast<char*>(&node.vector_id), sizeof(node.vector_id));
-                in.read(reinterpret_cast<char*>(&node.max_layer), sizeof(node.max_layer));
-                
-                size_t num_layers;
-                in.read(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
-                if (!in) throw std::runtime_error("EOF while reading layers");
-                
-                node.neighbors.resize(num_layers);
-                
-                for (size_t l = 0; l < num_layers; ++l) {
-                    size_t num_neighbors;
-                    in.read(reinterpret_cast<char*>(&num_neighbors), sizeof(num_neighbors));
-                    if (num_neighbors > 0) {
-                        node.neighbors[l].resize(num_neighbors);
-                        in.read(reinterpret_cast<char*>(node.neighbors[l].data()), num_neighbors * sizeof(uint32_t));
-                    }
+            // Read arena
+            size_t arena_sz;
+            in.read(reinterpret_cast<char*>(&arena_sz), sizeof(arena_sz));
+            if (!in) throw std::runtime_error("EOF while reading arena size");
+            neighbor_arena_.resize(arena_sz);
+            if (arena_sz > 0) {
+                in.read(reinterpret_cast<char*>(neighbor_arena_.data()), arena_sz * sizeof(uint32_t));
+            }
+            
+            size_t offset_sz;
+            in.read(reinterpret_cast<char*>(&offset_sz), sizeof(offset_sz));
+            if (!in) throw std::runtime_error("EOF while reading arena offset size");
+            node_arena_offset_.resize(offset_sz);
+            if (offset_sz > 0) {
+                in.read(reinterpret_cast<char*>(node_arena_offset_.data()), offset_sz * sizeof(size_t));
+            }
+            
+            size_t counts_sz;
+            in.read(reinterpret_cast<char*>(&counts_sz), sizeof(counts_sz));
+            if (!in) throw std::runtime_error("EOF while reading neighbor counts size");
+            neighbor_counts_.resize(counts_sz);
+            for (size_t i = 0; i < counts_sz; ++i) {
+                size_t c_sz;
+                in.read(reinterpret_cast<char*>(&c_sz), sizeof(c_sz));
+                if (!in) throw std::runtime_error("EOF while reading neighbor counts layers");
+                neighbor_counts_[i].resize(c_sz);
+                if (c_sz > 0) {
+                    in.read(reinterpret_cast<char*>(neighbor_counts_[i].data()), c_sz * sizeof(uint16_t));
                 }
             }
             
@@ -408,7 +460,9 @@ public:
             throw std::runtime_error("File format corrupted or invalid data: " + std::string(e.what()));
         }
     }
-
+    size_t dim() const { return dim_; }
+    size_t M() const { return M_; }
+    size_t efConstruction() const { return efConstruction_; }
 
 private:
     size_t dim_;
@@ -419,12 +473,56 @@ private:
     std::uniform_real_distribution<double> uniform_dist_;
     
 public: 
-    // Public temporarily to allow manual graph building in test_search_layer.cpp
+    
     // since insert() is not yet implemented.
     VectorStore vector_store_;
     std::vector<GraphNode> nodes_;
     int entry_point_id_ = -1;
     int max_layer_ = -1;
+    
+    std::vector<uint32_t> neighbor_arena_;
+    std::vector<size_t> node_arena_offset_;
+    std::vector<std::vector<uint16_t>> neighbor_counts_;
+
+    uint32_t* neighbor_slots(uint32_t node_id, int layer) {
+        size_t offset = node_arena_offset_[node_id];
+        if (layer == 0) {
+            return &neighbor_arena_[offset];
+        } else {
+            return &neighbor_arena_[offset + (2 * M_ + 1) + (layer - 1) * (M_ + 1)];
+        }
+    }
+
+    const uint32_t* neighbor_slots(uint32_t node_id, int layer) const {
+        size_t offset = node_arena_offset_[node_id];
+        if (layer == 0) {
+            return &neighbor_arena_[offset];
+        } else {
+            return &neighbor_arena_[offset + (2 * M_ + 1) + (layer - 1) * (M_ + 1)];
+        }
+    }
+
+    uint16_t get_neighbor_count(uint32_t node_id, int layer) const {
+        return neighbor_counts_[node_id][layer];
+    }
+
+    void set_neighbor_count(uint32_t node_id, int layer, uint16_t count) {
+        neighbor_counts_[node_id][layer] = count;
+    }
+    
+    
+    uint32_t allocate_node_in_arena(int node_layer) {
+        uint32_t node_id = nodes_.size();
+        size_t offset = neighbor_arena_.size();
+        node_arena_offset_.push_back(offset);
+        
+        // Give each layer 1 extra slot to hold the temporary new edge before pruning
+        size_t slot_count = (2 * M_ + 1) + node_layer * (M_ + 1);
+        neighbor_arena_.resize(offset + slot_count, UINT32_MAX);
+        
+        neighbor_counts_.push_back(std::vector<uint16_t>(node_layer + 1, 0));
+        return node_id;
+    }
 };
 
 } // namespace hnsw

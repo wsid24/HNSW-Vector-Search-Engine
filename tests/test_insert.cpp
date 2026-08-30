@@ -38,8 +38,8 @@ int main() {
     for (size_t i = 0; i < index.nodes_.size(); ++i) {
         const auto& node = index.nodes_[i];
         
-        // 1. Every node has neighbors.size() == max_layer + 1
-        assert(node.neighbors.size() == node.max_layer + 1);
+        // 1. Every node has neighbor_counts_ sized correctly
+        assert(index.neighbor_counts_[i].size() == node.max_layer + 1);
         
         // Populate histogram
         histogram[node.max_layer]++;
@@ -47,9 +47,10 @@ int main() {
         // 2. Constraints on neighbor list size
         for (int layer = 0; layer <= node.max_layer; ++layer) {
             size_t M_max = (layer == 0) ? (2 * M) : M;
-            if (node.neighbors[layer].size() > M_max) {
+            uint16_t count = index.get_neighbor_count(i, layer);
+            if (count > M_max) {
                 std::cerr << "Assertion failed: Node " << i << " at layer " << layer 
-                          << " has " << node.neighbors[layer].size() << " neighbors, expected <= " << M_max << std::endl;
+                          << " has " << count << " neighbors, expected <= " << M_max << std::endl;
                 assert(false);
             }
         }
